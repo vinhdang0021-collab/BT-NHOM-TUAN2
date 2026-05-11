@@ -1,0 +1,2 @@
+cd C:\Users\Vinh\Downloads
+python -m streamlit run appMOIMOI.py --server.port 8502
