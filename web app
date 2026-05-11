@@ -1,0 +1,792 @@
+import warnings
+import io
+import os
+
+import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
+import matplotlib
+import matplotlib.pyplot as plt
+
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'
+warnings.filterwarnings("ignore")
+
+st.set_page_config(
+    page_title="⚡ Dự đoán tiền điện phòng trọ",
+    page_icon="⚡",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;600;700;800&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Be Vietnam Pro', sans-serif;
+}
+.stApp {
+    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    color: #e8e8f0;
+}
+.stAppHeader, header[data-testid="stHeader"] {
+    display: none !important;
+}
+.block-container {
+    padding-top: 1.5rem !important;
+    max-width: 100% !important;
+}
+[data-testid="stToolbar"] {
+    display: none !important;
+}
+.main-header {
+    background: linear-gradient(90deg, #f7971e, #ffd200);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-size: 2.4rem;
+    font-weight: 800;
+    text-align: center;
+    margin-bottom: .2rem;
+}
+.sub-header {
+    text-align: center;
+    color: rgba(255,255,255,.45);
+    font-size: .9rem;
+    margin-bottom: 1.2rem;
+}
+.sec {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #ffd200;
+    border-left: 3px solid #ffd200;
+    padding-left: .7rem;
+    margin: 1rem 0 .7rem;
+}
+.result-box {
+    background: linear-gradient(135deg, rgba(247,151,30,.18), rgba(255,210,0,.08));
+    border: 2px solid rgba(255,210,0,.45);
+    border-radius: 20px;
+    padding: 2rem;
+    text-align: center;
+    margin-top: .5rem;
+}
+.result-amount {
+    font-size: 3rem;
+    font-weight: 800;
+    background: linear-gradient(90deg, #f7971e, #ffd200);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.result-sub {
+    font-size: .85rem;
+    color: rgba(255,255,255,.4);
+    margin-top: .3rem;
+}
+.ibox {
+    background: rgba(255,255,255,.05);
+    border-radius: 12px;
+    padding: .85rem 1rem;
+    border: 1px solid rgba(255,255,255,.1);
+    margin-bottom: .7rem;
+    font-size: .87rem;
+}
+.mcard {
+    background: rgba(255,255,255,.06);
+    border-radius: 12px;
+    padding: .8rem 1rem;
+    border: 1px solid rgba(255,210,0,.15);
+    margin-bottom: .55rem;
+}
+.step-box {
+    background: rgba(255,210,0,.08);
+    border: 1px solid rgba(255,210,0,.3);
+    border-radius: 14px;
+    padding: 1.2rem;
+    margin-bottom: .8rem;
+}
+label, .stSlider label, .stSelectbox label, .stRadio label {
+    color: rgba(255,255,255,.85) !important;
+    font-weight: 500 !important;
+}
+.stButton > button {
+    background: linear-gradient(90deg, #f7971e, #ffd200) !important;
+    color: #1a1a2e !important;
+    font-weight: 800 !important;
+    border: none !important;
+    border-radius: 12px !important;
+    width: 100% !important;
+    padding: .7rem !important;
+}
+.stTabs [data-baseweb="tab"] {
+    color: rgba(255,255,255,.5);
+    font-weight: 600;
+}
+.stTabs [aria-selected="true"] {
+    color: #ffd200 !important;
+    border-bottom-color: #ffd200 !important;
+}
+hr {
+    border-color: rgba(255,255,255,.08);
+}
+</style>
+""", unsafe_allow_html=True)
+
+FEATURES = [
+    "so_nguoi",
+    "so_may_lanh",
+    "so_quat",
+    "co_tu_lanh",
+    "gio_may_lanh",
+    "dien_tich",
+    "tang_lau",
+    "loai_nha",
+    "tong_thiet_bi",
+    "gio_lanh_thang",
+    "dien_tich_nguoi",
+]
+
+def dfig(w=5, h=4):
+    """Tạo figure/axes với style tối chuẩn cho toàn app."""
+    fig, ax = plt.subplots(figsize=(w, h))
+    fig.patch.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#16213e")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#2a2a4a")
+    ax.tick_params(colors="#aaa", labelsize=8)
+    return fig, ax
+
+
+def stat_cards(df):
+    """Hiển thị 4 thẻ thống kê tổng quan về tiền điện."""
+    c1, c2, c3, c4 = st.columns(4)
+    stats = [
+        ("Tổng mẫu",      f"{len(df)}",                         "mẫu"),
+        ("TB tiền điện",  f"{df['tien_dien'].mean() / 1e3:.0f}K", "₫/tháng"),
+        ("Thấp nhất",     f"{df['tien_dien'].min() / 1e3:.0f}K",  "₫/tháng"),
+        ("Cao nhất",      f"{df['tien_dien'].max() / 1e3:.0f}K",  "₫/tháng"),
+    ]
+    for col, (label, val, unit) in zip([c1, c2, c3, c4], stats):
+        col.markdown(f"""
+        <div style="background:rgba(255,255,255,.07); border:1px solid rgba(255,210,0,.2);
+             border-radius:14px; padding:1rem; text-align:center; margin-bottom:.5rem">
+          <div style="font-size:.72rem; color:rgba(255,255,255,.45);
+               text-transform:uppercase; letter-spacing:1px">{label}</div>
+          <div style="font-size:1.6rem; font-weight:800; color:#ffd200">{val}</div>
+          <div style="font-size:.75rem; color:rgba(255,255,255,.35)">{unit}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+def clean_data(df_raw):
+    """
+    Làm sạch dữ liệu thô từ Google Form:
+    - Đổi tên cột, xóa timestamp và email
+    - Chuẩn hóa tiền điện (xử lý thiếu đơn vị)
+    - Encode tủ lạnh / tầng lầu / loại nhà
+    - Dùng Fuzzy Logic lọc bỏ mẫu không nhất quán
+    """
+    df = df_raw.copy()
+    df.columns = [
+        "timestamp", "email", "so_nguoi", "so_may_lanh", "so_quat",
+        "co_tu_lanh", "gio_may_lanh", "dien_tich", "tang_lau", "loai_nha", "tien_dien"
+    ]
+    df = df.drop(columns=["timestamp", "email"])
+
+    def clean_tien(v):
+        v = str(v).strip().replace(" ", "")
+       
+        if v.count(".") == 1 and len(v.split(".")[1]) == 3:
+            v = v.replace(".", "")
+        try:
+            return float(v)
+        except ValueError:
+            return np.nan
+
+    df["tien_dien"] = df["tien_dien"].apply(clean_tien)
+  
+    df.loc[df["tien_dien"] < 10_000, "tien_dien"] *= 1000
+
+    numeric_cols = ["so_nguoi", "so_may_lanh", "so_quat", "gio_may_lanh", "dien_tich"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col].astype(str).str.strip(), errors="coerce")
+
+    df["co_tu_lanh"] = df["co_tu_lanh"].apply(lambda x: 1 if str(x).strip() == "Có" else 0)
+
+    df["tang_lau"] = df["tang_lau"].map({
+        "Tầng trệt": 1,
+        "Tầng giữa": 2,
+        "Tầng thượng/Áp mái": 3
+    }).fillna(2).astype("Int64")
+
+    df["loai_nha"] = df["loai_nha"].map({
+        "Phòng trọ": 0,
+        "Chung cư": 1,
+        "Nhà nguyên căn": 2
+    }).fillna(0).astype("Int64")
+
+    df = df.dropna()
+
+    def triangular(v, lo, mid, hi):
+        """Hàm membership tam giác: trả về giá trị trong [0, 1]."""
+        if v <= lo or v >= hi:
+            return 0.0
+        if v <= mid:
+            return (v - lo) / (mid - lo)
+        return (hi - v) / (hi - mid)
+
+    def compute_trust(row):
+        s1 = triangular(
+            row["tien_dien"],
+            row["so_may_lanh"] * 80_000  + 50_000,
+            row["so_may_lanh"] * 250_000 + 200_000,
+            row["so_may_lanh"] * 800_000 + 800_000
+        )
+        s2 = triangular(row["gio_may_lanh"], -1, 7, 25)
+        s3 = triangular(row["dien_tich"],     4, 25, 201)
+        s4 = triangular(
+            row["tien_dien"] / max(row["so_nguoi"], 1),
+            50_000, 300_000, 1_500_000
+        )
+        return np.mean([s1, s2, s3, s4])
+
+    df["trust"] = df.apply(compute_trust, axis=1)
+
+    df_suspicious = df[df["trust"] < 0.3].copy()
+    df_clean = (
+        df[df["trust"] >= 0.3]
+        .drop(columns=["trust"])
+        .reset_index(drop=True)
+    )
+
+    output_cols = [
+        "so_nguoi", "so_may_lanh", "so_quat", "co_tu_lanh",
+        "gio_may_lanh", "dien_tich", "tang_lau", "loai_nha", "tien_dien"
+    ]
+    return df_clean[output_cols], df_suspicious
+
+def feature_engineering(df):
+    """Tạo thêm 3 feature mới từ dữ liệu hiện có."""
+    df = df.copy()
+    df["tong_thiet_bi"]   = df["so_may_lanh"] + df["so_quat"] + df["co_tu_lanh"]
+    df["gio_lanh_thang"]  = df["gio_may_lanh"] * 30
+    df["dien_tich_nguoi"] = df["dien_tich"] / df["so_nguoi"].clip(1)
+    return df
+
+def train_models(df):
+    """
+    Train 3 mô hình hồi quy, trả về dict kết quả, tên model tốt nhất, và scaler.
+    Linear Regression dùng StandardScaler; Random Forest và Gradient Boosting thì không.
+    """
+    df = feature_engineering(df)
+
+    X = df[FEATURES]
+    y = df["tien_dien"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled  = scaler.transform(X_test)
+
+    models_dict = {
+        "Linear Regression": (LinearRegression(),                              True),
+        "Random Forest":     (RandomForestRegressor(n_estimators=200, random_state=42), False),
+        "Gradient Boosting": (GradientBoostingRegressor(n_estimators=200, random_state=42), False),
+    }
+
+    results = {}
+    for name, (model, use_scale) in models_dict.items():
+        X_tr = X_train_scaled if use_scale else X_train
+        X_te = X_test_scaled  if use_scale else X_test
+
+        model.fit(X_tr, y_train)
+        pred = model.predict(X_te)
+
+        results[name] = {
+            "model":  model,
+            "use_sc": use_scale,
+            "mae":    mean_absolute_error(y_test, pred),
+            "rmse":   np.sqrt(mean_squared_error(y_test, pred)),
+            "r2":     r2_score(y_test, pred),
+            "y_test": y_test.values,
+            "pred":   pred,
+        }
+
+    best_name = max(results, key=lambda k: results[k]["r2"])
+    return results, best_name, scaler
+
+st.markdown('<div class="main-header">⚡ Dự đoán tiền điện phòng trọ</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="sub-header">Upload dữ liệu → Làm sạch → EDA → Train model → Dự đoán realtime</div>',
+    unsafe_allow_html=True
+)
+
+tab0, tab1, tab2, tab3, tab4 = st.tabs([
+    "📁 Dữ liệu",
+    "🧹 Data Cleaning",
+    "📊 EDA",
+    "📈 Train Model",
+    "🔮 Dự đoán",
+])
+
+with tab0:
+    st.markdown('<div class="sec">📁 Upload file dữ liệu khảo sát</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="ibox">
+    📌 Upload file CSV từ Google Form khảo sát. App sẽ tự động:<br>
+    <b>① Làm sạch</b> → <b>② Phân tích EDA</b> → <b>③ Train model</b> → <b>④ Dự đoán realtime</b>
+    </div>
+    """, unsafe_allow_html=True)
+
+    uploaded = st.file_uploader("Chọn file CSV", type=["csv"])
+
+    if uploaded:
+        df_raw = pd.read_csv(uploaded)
+        st.success(f"✅ Đọc thành công: **{len(df_raw)} mẫu**, **{len(df_raw.columns)} cột**")
+        st.markdown('<div class="sec">Xem trước dữ liệu gốc</div>', unsafe_allow_html=True)
+        st.dataframe(df_raw.head(10), use_container_width=True)
+        st.session_state["df_raw"] = df_raw
+        st.info("👉 Chuyển sang tab **🧹 Data Cleaning** để tiếp tục")
+    else:
+        st.markdown("""
+        <div class="step-box" style="text-align:center; padding:3rem">
+            <div style="font-size:3rem">📁</div>
+            <div style="color:rgba(255,255,255,.4); margin-top:.5rem">
+                Upload file CSV khảo sát của bạn để bắt đầu
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+with tab1:
+    st.markdown('<div class="sec">🧹 Data Cleaning + Fuzzy Logic</div>', unsafe_allow_html=True)
+
+    if "df_raw" not in st.session_state:
+        st.warning("⚠️ Chưa có dữ liệu. Vui lòng upload file CSV ở tab **📁 Dữ liệu** trước.")
+    else:
+        df_raw = st.session_state["df_raw"]
+        n_raw  = len(df_raw)
+
+        st.markdown("""
+        <div class="ibox">
+        Pipeline làm sạch tự động:<br>
+        ① Xóa timestamp, email &nbsp;|&nbsp;
+        ② Chuẩn hóa tiền điện (nhập thiếu đơn vị) &nbsp;|&nbsp;
+        ③ Encode tủ lạnh / tầng / loại nhà &nbsp;|&nbsp;
+        ④ Xóa NaN &nbsp;|&nbsp;
+        ⑤ <b>Fuzzy Logic</b> lọc dữ liệu không nhất quán (trust score ≥ 0.3)
+        </div>
+        """, unsafe_allow_html=True)
+
+        THRESHOLD = st.slider("🎚️ Fuzzy threshold (trust score tối thiểu)", 0.1, 0.6, 0.3, 0.05)
+
+        if st.button("🧹 Bắt đầu làm sạch dữ liệu"):
+            with st.spinner("Đang làm sạch..."):
+                df_clean, df_sus = clean_data(df_raw)
+                st.session_state["df_clean"]      = df_clean
+                st.session_state["df_suspicious"] = df_sus
+
+            n_clean = len(df_clean)
+            n_sus   = len(df_sus)
+
+            c1, c2, c3 = st.columns(3)
+            c1.markdown(f"""
+            <div class="step-box" style="text-align:center">
+                <div style="font-size:1.8rem; font-weight:800; color:#ffd200">{n_raw}</div>
+                <div style="color:rgba(255,255,255,.5); font-size:.8rem">Dữ liệu gốc</div>
+            </div>
+            """, unsafe_allow_html=True)
+            c2.markdown(f"""
+            <div class="step-box" style="text-align:center">
+                <div style="font-size:1.8rem; font-weight:800; color:#ff6b6b">{n_sus}</div>
+                <div style="color:rgba(255,255,255,.5); font-size:.8rem">Bị loại (Fuzzy)</div>
+            </div>
+            """, unsafe_allow_html=True)
+            c3.markdown(f"""
+            <div class="step-box" style="text-align:center">
+                <div style="font-size:1.8rem; font-weight:800; color:#4dff4d">{n_clean}</div>
+                <div style="color:rgba(255,255,255,.5); font-size:.8rem">Mẫu sạch ✅</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown('<div class="sec">Dữ liệu sau khi làm sạch</div>', unsafe_allow_html=True)
+            st.dataframe(df_clean, use_container_width=True, height=300)
+
+            col_dl1, col_dl2 = st.columns(2)
+            col_dl1.download_button(
+                "⬇️ Tải data_clean.csv",
+                df_clean.to_csv(index=False).encode(),
+                "data_clean.csv",
+                "text/csv"
+            )
+            if len(df_sus) > 0:
+                col_dl2.download_button(
+                    "⬇️ Tải data_suspicious.csv",
+                    df_sus.to_csv(index=False).encode(),
+                    "data_suspicious.csv",
+                    "text/csv"
+                )
+
+            if n_clean >= 10:
+                st.success("✅ Làm sạch xong! Chuyển sang tab **📊 EDA** để phân tích.")
+            else:
+                st.error("❌ Dữ liệu sạch quá ít. Hãy giảm Fuzzy threshold.")
+
+        elif "df_clean" in st.session_state:
+            st.success(f"✅ Đã làm sạch: **{len(st.session_state['df_clean'])} mẫu sạch**")
+            st.dataframe(st.session_state["df_clean"], use_container_width=True, height=300)
+
+with tab2:
+    st.markdown('<div class="sec">📊 Exploratory Data Analysis</div>', unsafe_allow_html=True)
+
+    if "df_clean" not in st.session_state:
+        st.warning("⚠️ Chưa có dữ liệu sạch. Vui lòng làm sạch dữ liệu ở tab **🧹 Data Cleaning** trước.")
+    else:
+        df = st.session_state["df_clean"]
+        stat_cards(df)
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown('<div class="sec">Phân phối tiền điện</div>', unsafe_allow_html=True)
+            fig, ax = dfig()
+            ax.hist(df["tien_dien"] / 1e3, bins=30, color="#ffd200", alpha=.85, edgecolor="#1a1a2e")
+            ax.axvline(
+                df["tien_dien"].mean() / 1e3,
+                color="#f7971e", lw=2, linestyle="--",
+                label=f"TB: {df['tien_dien'].mean() / 1e3:.0f}K₫"
+            )
+            ax.set_xlabel("Tiền điện (K₫)", color="#aaa")
+            ax.set_ylabel("Số mẫu", color="#aaa")
+            ax.set_title("Phân phối tiền điện", color="#ffd200", fontsize=10)
+            ax.legend(fontsize=8, labelcolor="#ffd200", facecolor="#1a1a2e", edgecolor="#333")
+            st.pyplot(fig, use_container_width=True)
+
+        with c2:
+            st.markdown('<div class="sec">TB tiền điện theo số máy lạnh</div>', unsafe_allow_html=True)
+            fig, ax = dfig()
+            g = df.groupby("so_may_lanh")["tien_dien"].mean() / 1e3
+            ax.bar(g.index, g.values, color="#f7971e", alpha=.85, width=.6, edgecolor="#1a1a2e")
+            for i, v in zip(g.index, g.values):
+                ax.text(i, v + 3, f"{v:.0f}K", ha="center", color="#ccc", fontsize=8)
+            ax.set_xlabel("Số máy lạnh", color="#aaa")
+            ax.set_ylabel("TB tiền điện (K₫)", color="#aaa")
+            ax.set_title("Ảnh hưởng máy lạnh", color="#ffd200", fontsize=10)
+            ax.set_xticks(g.index)
+            st.pyplot(fig, use_container_width=True)
+
+      
+        c3, c4 = st.columns(2)
+
+        with c3:
+            st.markdown('<div class="sec">TB tiền điện theo số người</div>', unsafe_allow_html=True)
+            fig, ax = dfig()
+            g2 = df.groupby("so_nguoi")["tien_dien"].mean() / 1e3
+            ax.bar(g2.index, g2.values, color="#ffd200", alpha=.85, width=.6, edgecolor="#1a1a2e")
+            for i, v in zip(g2.index, g2.values):
+                ax.text(i, v + 3, f"{v:.0f}K", ha="center", color="#ccc", fontsize=8)
+            ax.set_xlabel("Số người", color="#aaa")
+            ax.set_ylabel("TB tiền điện (K₫)", color="#aaa")
+            ax.set_title("Ảnh hưởng số người", color="#ffd200", fontsize=10)
+            ax.set_xticks(g2.index)
+            st.pyplot(fig, use_container_width=True)
+
+        with c4:
+            st.markdown('<div class="sec">Boxplot theo loại nhà</div>', unsafe_allow_html=True)
+            fig, ax = dfig()
+            data_box = [
+                df[df["loai_nha"] == i]["tien_dien"].values / 1e3
+                for i in range(3)
+            ]
+            data_box = [d for d in data_box if len(d) > 0]
+            if data_box:
+                bp = ax.boxplot(
+                    data_box,
+                    patch_artist=True,
+                    medianprops=dict(color="#1a1a2e", lw=2)
+                )
+                for patch, color in zip(bp["boxes"], ["#ffd200", "#f7971e", "#ff6b6b"]):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(.8)
+            ax.set_xticklabels(
+                ["Phòng trọ", "Chung cư", "Nguyên căn"][:len(data_box)],
+                color="#ccc", fontsize=8
+            )
+            ax.set_ylabel("Tiền điện (K₫)", color="#aaa")
+            ax.set_title("Boxplot theo loại nhà", color="#ffd200", fontsize=10)
+            st.pyplot(fig, use_container_width=True)
+
+        st.markdown('<div class="sec">Heatmap Correlation</div>', unsafe_allow_html=True)
+        fig2, ax2 = plt.subplots(figsize=(9, 4))
+        fig2.patch.set_facecolor("#1a1a2e")
+        ax2.set_facecolor("#16213e")
+
+        cols_h   = ["so_nguoi", "so_may_lanh", "so_quat", "co_tu_lanh", "gio_may_lanh", "dien_tich", "tien_dien"]
+        labels_h = ["Số người", "Máy lạnh", "Quạt", "Tủ lạnh", "Giờ ML", "Diện tích", "Tiền điện"]
+
+        corr = df[cols_h].corr()
+        im = ax2.imshow(corr.values, cmap="YlOrRd", vmin=-1, vmax=1)
+
+        ax2.set_xticks(range(len(labels_h)))
+        ax2.set_yticks(range(len(labels_h)))
+        ax2.set_xticklabels(labels_h, rotation=45, ha="right", color="#ccc", fontsize=8)
+        ax2.set_yticklabels(labels_h, color="#ccc", fontsize=8)
+
+        for i in range(len(labels_h)):
+            for j in range(len(labels_h)):
+                val = corr.values[i, j]
+                text_color = "black" if abs(val) > .5 else "#eee"
+                ax2.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=7.5, color=text_color)
+
+        plt.colorbar(im, ax=ax2)
+        ax2.set_title("Correlation Matrix", color="#ffd200", fontsize=11)
+        for spine in ax2.spines.values():
+            spine.set_edgecolor("#2a2a4a")
+        ax2.tick_params(colors="#aaa", labelsize=8)
+        plt.tight_layout()
+        st.pyplot(fig2, use_container_width=True)
+
+with tab3:
+    st.markdown('<div class="sec">📈 Train Model ML</div>', unsafe_allow_html=True)
+
+    if "df_clean" not in st.session_state:
+        st.warning("⚠️ Chưa có dữ liệu sạch. Vui lòng làm sạch dữ liệu ở tab **🧹 Data Cleaning** trước.")
+    else:
+        df = st.session_state["df_clean"]
+
+        st.markdown("""
+        <div class="ibox">
+        Train 3 mô hình: <b>Linear Regression</b>, <b>Random Forest</b>, <b>Gradient Boosting</b><br>
+        Feature Engineering: +3 features mới (tổng thiết bị, giờ lạnh/tháng, diện tích/người)<br>
+        Đánh giá: <b>MAE / RMSE / R²</b>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🚀 Bắt đầu Train Model"):
+            with st.spinner("Đang train model... vui lòng chờ"):
+                results, best_name, scaler = train_models(df)
+                st.session_state["results"]   = results
+                st.session_state["best_name"] = best_name
+                st.session_state["scaler"]    = scaler
+
+            st.success(
+                f"✅ Train xong! Model tốt nhất: **{best_name}** "
+                f"(R²={results[best_name]['r2']:.3f})"
+            )
+
+        if "results" in st.session_state:
+            results   = st.session_state["results"]
+            best_name = st.session_state["best_name"]
+            scaler    = st.session_state["scaler"]
+
+            metrics_rows = []
+            for name, v in results.items():
+                metrics_rows.append({
+                    "Mô hình":  name,
+                    "MAE (₫)":  f"{v['mae']:,.0f}",
+                    "RMSE (₫)": f"{v['rmse']:,.0f}",
+                    "R²":       f"{v['r2']:.4f}",
+                    "":         "⭐ Best" if name == best_name else "—",
+                })
+            mdf = pd.DataFrame(metrics_rows)
+            st.dataframe(mdf, use_container_width=True, hide_index=True)
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.markdown('<div class="sec">Dự đoán vs Thực tế</div>', unsafe_allow_html=True)
+                sel = st.selectbox("Chọn mô hình", list(results.keys()), key="sc_train")
+                r   = results[sel]
+
+                fig, ax = dfig()
+                ax.scatter(
+                    r["y_test"] / 1e3, r["pred"] / 1e3,
+                    alpha=.45, color="#ffd200", s=22, edgecolors="none"
+                )
+                lo = min(r["y_test"].min(), r["pred"].min()) / 1e3 - 20
+                hi = max(r["y_test"].max(), r["pred"].max()) / 1e3 + 20
+                ax.plot([lo, hi], [lo, hi], "w--", lw=1.2, alpha=.4)
+                ax.set_xlabel("Thực tế (K₫)", color="#aaa", fontsize=9)
+                ax.set_ylabel("Dự đoán (K₫)", color="#aaa", fontsize=9)
+                ax.set_title(f"R² = {r['r2']:.3f}", color="#ffd200", fontsize=10)
+                st.pyplot(fig, use_container_width=True)
+
+            with c2:
+                st.markdown('<div class="sec">Feature Importance (Random Forest)</div>', unsafe_allow_html=True)
+                rf = results["Random Forest"]["model"]
+                fi = pd.Series(rf.feature_importances_, index=FEATURES).sort_values()
+
+                label_map = {
+                    "so_nguoi":       "Số người",
+                    "so_may_lanh":    "Máy lạnh",
+                    "so_quat":        "Quạt",
+                    "co_tu_lanh":     "Tủ lạnh",
+                    "gio_may_lanh":   "Giờ ML/ngày",
+                    "dien_tich":      "Diện tích",
+                    "tang_lau":       "Tầng",
+                    "loai_nha":       "Loại nhà",
+                    "tong_thiet_bi":  "Tổng thiết bị",
+                    "gio_lanh_thang": "Giờ lạnh/tháng",
+                    "dien_tich_nguoi":"DT/người",
+                }
+                fi.index = [label_map[i] for i in fi.index]
+
+                fig2, ax2 = dfig()
+                colors_fi = ["#f7971e" if v == fi.max() else "#ffd200" for v in fi.values]
+                bars = ax2.barh(fi.index, fi.values, color=colors_fi, alpha=.85, height=.6)
+                for bar, val in zip(bars, fi.values):
+                    ax2.text(
+                        val + .001,
+                        bar.get_y() + bar.get_height() / 2,
+                        f"{val:.3f}",
+                        va="center", color="#ccc", fontsize=7
+                    )
+                ax2.set_xlabel("Importance", color="#aaa", fontsize=9)
+                ax2.set_title("Feature Importance", color="#ffd200", fontsize=10)
+                st.pyplot(fig2, use_container_width=True)
+
+            st.info("✅ Train xong! Chuyển sang tab **🔮 Dự đoán** để dùng thử.")
+
+with tab4:
+    st.markdown('<div class="sec">🔮 Dự đoán tiền điện realtime</div>', unsafe_allow_html=True)
+
+    if "results" not in st.session_state:
+        st.warning("⚠️ Chưa train model. Vui lòng hoàn thành các bước trước.")
+    else:
+        results   = st.session_state["results"]
+        best_name = st.session_state["best_name"]
+        scaler    = st.session_state["scaler"]
+
+        L, R = st.columns([1.1, 0.9], gap="large")
+
+        with L:
+            st.markdown('<div class="sec">🏠 Thông tin phòng</div>', unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+
+            with c1:
+                so_nguoi  = st.number_input("👥 Số người ở", min_value=1, max_value=20, value=2, step=1)
+                dien_tich = st.slider("📐 Diện tích (m²)", 10, 60, 25)
+
+            with c2:
+                tang_lau = 2  # Mặc định tầng giữa
+                loai_str = st.selectbox("🏘️ Loại nhà", ["Phòng trọ", "Nhà nguyên căn", "Chung cư"])
+                loai_val = {"Phòng trọ": 0, "Chung cư": 1, "Nhà nguyên căn": 2}[loai_str]
+
+            st.markdown('<div class="sec">⚡ Thiết bị điện</div>', unsafe_allow_html=True)
+            c3, c4 = st.columns(2)
+
+            with c3:
+                so_may_lanh  = st.slider("❄️ Số máy lạnh", 0, 4, 1)
+                gio_may_lanh = st.slider("⏱️ Giờ bật/ngày", 0.0, 16.0, 6.0, step=0.5)
+
+            with c4:
+                so_quat = st.slider("🌀 Số quạt", 0, 6, 2)
+                tu_str  = st.radio("🧊 Có tủ lạnh?", ["✅ Có", "❌ Không"], horizontal=True)
+                tu_val  = 1 if "Có" in tu_str else 0
+
+            model_choice = st.selectbox(
+                "🤖 Mô hình",
+                list(results.keys()),
+                index=list(results.keys()).index(best_name)
+            )
+            st.caption(
+                f"MAE: **{results[model_choice]['mae']:,.0f}₫** | "
+                f"R²: **{results[model_choice]['r2']:.3f}**"
+            )
+            btn = st.button("⚡ Dự đoán tiền điện ngay")
+
+        with R:
+            st.markdown('<div class="sec">📈 Kết quả</div>', unsafe_allow_html=True)
+
+            if btn:
+               
+                tong_tb   = so_may_lanh + so_quat + tu_val
+                gio_thang = gio_may_lanh * 30
+                dt_nguoi  = dien_tich / max(so_nguoi, 1)
+
+                X_in = np.array([[
+                    so_nguoi, so_may_lanh, so_quat, tu_val,
+                    gio_may_lanh, dien_tich, tang_lau, loai_val,
+                    tong_tb, gio_thang, dt_nguoi
+                ]])
+
+                model    = results[model_choice]["model"]
+                use_sc   = results[model_choice]["use_sc"]
+                X_pred   = scaler.transform(X_in) if use_sc else X_in
+                pred_val = float(model.predict(X_pred)[0])
+                pred_val = max(50_000, pred_val)
+
+                st.markdown(f"""
+                <div class="result-box">
+                    <div style="font-size:.8rem; color:rgba(255,255,255,.5);
+                         letter-spacing:2px; text-transform:uppercase; margin-bottom:.4rem">
+                        Tiền điện dự đoán / tháng
+                    </div>
+                    <div class="result-amount">{pred_val:,.0f} ₫</div>
+                    <div class="result-sub">≈ {pred_val / 30:,.0f} ₫/ngày · {model_choice}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown('<div class="sec">🔍 Chi phí ước tính</div>', unsafe_allow_html=True)
+                breakdown = {
+                    "❄️ Máy lạnh":  so_may_lanh * gio_may_lanh * 30 * 2.5 * 3_500,
+                    "🧊 Tủ lạnh":   tu_val * 45 * 3_500,
+                    "🌀 Quạt":       so_quat * 0.065 * 16 * 30 * 3_500,
+                    "💡 Sinh hoạt":  so_nguoi * 1.5 * 30 * 3_500,
+                    "📺 Khác":       0.5 * 30 * 3_500,
+                }
+                total_raw = sum(breakdown.values()) or 1
+                scale     = pred_val / total_raw
+
+                for item, val in breakdown.items():
+                    scaled = val * scale
+                    pct    = scaled / pred_val * 100
+                    bar    = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+                    st.markdown(f"""
+                    <div class="ibox" style="padding:.6rem 1rem">
+                      <div style="display:flex; justify-content:space-between; margin-bottom:3px">
+                        <span>{item}</span>
+                        <span style="color:#ffd200; font-weight:700">{scaled:,.0f}₫ ({pct:.0f}%)</span>
+                      </div>
+                      <div style="font-size:.72rem; color:#f7971e; letter-spacing:1px">{bar}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                tips = []
+                if so_may_lanh > 0 and gio_may_lanh > 8:
+                    tips.append("⚠️ Giảm giờ máy lạnh xuống 8h/ngày → tiết kiệm 20–30%.")
+                if so_may_lanh >= 2:
+                    tips.append("🌡️ Đặt nhiệt độ 26–27°C → tiết kiệm 15% điện máy lạnh.")
+                if so_quat >= 4:
+                    tips.append("🌀 Tắt quạt khi ra ngoài → mỗi quạt ~15.000₫/tháng.")
+                if not tips:
+                    tips.append("✅ Mức tiêu thụ điện đang hợp lý!")
+
+                st.markdown('<div class="sec">💡 Gợi ý tiết kiệm</div>', unsafe_allow_html=True)
+                for tip in tips:
+                    st.markdown(f'<div class="ibox">{tip}</div>', unsafe_allow_html=True)
+
+            else:
+                st.markdown("""
+                <div class="result-box" style="padding:3rem">
+                    <div style="font-size:3.5rem">⚡</div>
+                    <div style="color:rgba(255,255,255,.35); margin-top:.5rem">
+                        Điền thông tin rồi bấm<br>
+                        <b style="color:#ffd200">Dự đoán tiền điện ngay</b>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+
+st.markdown("""
+<hr/>
+<div style="text-align:center; color:rgba(255,255,255,.2); font-size:.78rem; padding:.5rem 0 1rem">
+  ⚡ Project 4 — Dự đoán tiền điện phòng trọ · Streamlit + Scikit-learn + Fuzzy Logic
+</div>
+""", unsafe_allow_html=True)
